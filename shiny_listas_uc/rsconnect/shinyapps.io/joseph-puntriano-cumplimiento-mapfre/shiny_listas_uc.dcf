@@ -1,0 +1,12 @@
+name: shiny_listas_uc
+title: shiny_listas_uc
+username: joseph-puntriano-cumplimiento-mapfre
+account: joseph-puntriano-cumplimiento-mapfre
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 16350076
+bundleId: 11362146
+url: https://joseph-puntriano-cumplimiento-mapfre.shinyapps.io/shiny_listas_uc/
+version: 1
+asMultiple: FALSE
+asStatic: FALSE

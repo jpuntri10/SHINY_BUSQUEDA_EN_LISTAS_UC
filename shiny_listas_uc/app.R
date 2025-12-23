@@ -1,9 +1,5 @@
 
 
-
-
-
-# app.R
 library(shiny)
 library(readxl)
 library(dplyr)
@@ -15,6 +11,25 @@ library(tidyr)
 
 # Para PDF sin LaTeX (opcional)
 has_pkg <- function(pkg) requireNamespace(pkg, quietly = TRUE)
+
+# =============================
+#  Zona horaria: America/Lima
+# =============================
+TZ_APP <- "America/Lima"
+Sys.setenv(TZ = TZ_APP)
+options(tz = TZ_APP)
+
+# Helper para obtener fecha/hora formateada siempre en Lima
+fecha_local <- function(fmt = "%Y-%m-%d %H:%M:%S") {
+  format(Sys.time(), tz = TZ_APP, fmt)
+}
+
+# Logs para diagnosticar TZ en los registros del servidor
+message("== Zona horaria de la app ==")
+message("TZ env: '", Sys.getenv("TZ"), "'")
+message("Sys.timezone(): ", Sys.timezone())
+message("as.POSIXlt(Sys.time())$zone: ",
+        paste(unique(as.POSIXlt(Sys.time())$zone), collapse = ", "))
 
 ui <- fluidPage(
   titlePanel("Cruce de Documentos con listas UC (Excel fijo)"),
@@ -67,7 +82,10 @@ server <- function(input, output, session) {
   
   # Normaliza encabezados y mapea nombres comunes
   normalizar_y_mapear <- function(df) {
-    names(df) <- names(df) |> str_trim() |> toupper()
+    names(df) <- names(df) |>
+      str_trim() |>
+      toupper()
+    
     mapa <- c(
       "COD_ID"        = "COD_DOCUM",
       "TIPO_ID"       = "TIP_DOCUM",
@@ -176,7 +194,8 @@ server <- function(input, output, session) {
     }, error = function(e) {
       base_listas(NULL)
       info_carga(list(path = path_ok, hojas = character(0)))
-      showNotification(paste("Error leyendo el Excel base:", e$message), type = "error", duration = 12)
+      showNotification(paste("Error leyendo el Excel base:", e$message),
+                       type = "error", duration = 12)
     })
   })
   
@@ -211,7 +230,8 @@ server <- function(input, output, session) {
     base <- base_listas()
     req(base)
     
-    fecha_busqueda <- format(Sys.time(), "%Y-%m-%d %H:%M:%S")
+    # Fecha/Hora siempre en America/Lima
+    fecha_busqueda <- fecha_local()
     
     # Documentos a consultar
     codigos_df <- NULL
@@ -225,7 +245,8 @@ server <- function(input, output, session) {
         consulta <- consulta |> dplyr::rename(COD_DOCUM = COD_ID)
       }
       if (!("COD_DOCUM" %in% names(consulta))) {
-        showNotification("El archivo de consulta debe tener la columna COD_DOCUM (o COD_ID).", type = "error")
+        showNotification("El archivo de consulta debe tener la columna COD_DOCUM (o COD_ID).",
+                         type = "error")
         return(NULL)
       }
       cols_consulta <- intersect(c("COD_DOCUM", "TIP_DOCUM"), names(consulta))
@@ -279,7 +300,9 @@ server <- function(input, output, session) {
   
   # Excel
   output$descargar_excel <- downloadHandler(
-    filename = function() paste0("resultado_cruce_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".xlsx"),
+    filename = function() paste0(
+      "resultado_cruce_", fecha_local("%Y%m%d_%H%M%S"), ".xlsx"
+    ),
     content = function(file) {
       df <- resultado_cruce()
       cols <- cols_presentes(df, columnas_mostrar)
@@ -290,7 +313,9 @@ server <- function(input, output, session) {
   
   # PDF robusto (sin LaTeX)
   output$descargar_pdf <- downloadHandler(
-    filename = function() paste0("resultado_cruce_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".pdf"),
+    filename = function() paste0(
+      "resultado_cruce_", fecha_local("%Y%m%d_%H%M%S"), ".pdf"
+    ),
     contentType = "application/pdf",
     content = function(file) {
       df <- resultado_cruce()
@@ -327,7 +352,7 @@ thead { background: #f0f0f0; }
         html_content <- paste0(
           html_header,
           sprintf("<h1>Resultado de búsqueda en listas</h1>"),
-          sprintf("<p><strong>Generado:</strong> %s</p>", format(Sys.time(), "%Y-%m-%d %H:%M:%S")),
+          sprintf("<p><strong>Generado:</strong> %s</p>", fecha_local()),
           sprintf("<p><strong>Registros:</strong> %d</p>", nrow(df)),
           as.character(tbl_html),
           html_footer
@@ -344,7 +369,7 @@ thead { background: #f0f0f0; }
         grid::grid.newpage()
         grid::grid.text("Resultado de búsqueda en listas", x = 0.5, y = 0.95,
                         gp = grid::gpar(fontsize = 14, fontface = "bold"))
-        grid::grid.text(sprintf("Generado: %s", format(Sys.time(), "%Y-%m-%d %H:%M:%S")),
+        grid::grid.text(sprintf("Generado: %s", fecha_local()),
                         x = 0.5, y = 0.92, gp = grid::gpar(fontsize = 10))
         grid::grid.text(sprintf("Registros: %d", nrow(df)),
                         x = 0.5, y = 0.89, gp = grid::gpar(fontsize = 10))
@@ -359,7 +384,7 @@ thead { background: #f0f0f0; }
       op <- par(mar = c(1,1,1,1))
       plot.new()
       mtext("Resultado de búsqueda en listas", side = 3, line = -2, cex = 1.2, font = 2)
-      mtext(sprintf("Generado: %s", format(Sys.time(), "%Y-%m-%d %H:%M:%S")), side = 3, line = -1, cex = 0.9)
+      mtext(sprintf("Generado: %s", fecha_local()), side = 3, line = -1, cex = 0.9)
       mtext(sprintf("Registros: %d", nrow(df)), side = 3, line = 0, cex = 0.9)
       N <- min(nrow(df), 40); y <- 0.8; step <- 0.02
       headers <- paste(names(df), collapse = " | ")
