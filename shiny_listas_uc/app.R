@@ -1,6 +1,3 @@
-
-
-
 library(shiny)
 library(readxl)
 library(dplyr)
@@ -36,7 +33,7 @@ ui <- fluidPage(
   titlePanel("Cruce de Documentos con listas UC (Excel fijo)"),
   sidebarLayout(
     sidebarPanel(
-      fileInput("archivo_consulta", "Sube tu Excel con COD_DOCUM (opcional)",
+      fileInput("archivo_consulta", "Sube tu Excel con COD_DOCUM",
                 accept = c(".xlsx", ".xls")),
       textInput("doc_manual", "O ingresa un documento manualmente"),
       actionButton("procesar", "Procesar"),
