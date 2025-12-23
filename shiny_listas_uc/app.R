@@ -1,5 +1,6 @@
 
 
+
 library(shiny)
 library(readxl)
 library(dplyr)
@@ -66,7 +67,8 @@ server <- function(input, output, session) {
     "NOMBRES",
     "LISTAS",
     "NOMBRE_O_RAZON_SOCIAL",
-    "FECHA_BUSQUEDA"
+    "FECHA_BUSQUEDA",
+    "ESTADO" # opcional; se ve si hubo match o no
   )
   
   # Helper: seleccionar solo columnas presentes (evita errores)
@@ -225,7 +227,7 @@ server <- function(input, output, session) {
     }
   })
   
-  # Procesar cruce
+  # === Procesar cruce (incluye SIN COINCIDENCIA para búsqueda masiva) ===
   observeEvent(input$procesar, {
     base <- base_listas()
     req(base)
@@ -233,14 +235,20 @@ server <- function(input, output, session) {
     # Fecha/Hora siempre en America/Lima
     fecha_busqueda <- fecha_local()
     
-    # Documentos a consultar
+    # 1) Construir tabla de consulta (manual o Excel)
     codigos_df <- NULL
     if (nzchar(input$doc_manual)) {
-      codigos_df <- data.frame(COD_DOCUM = input$doc_manual, stringsAsFactors = FALSE)
+      codigos_df <- data.frame(
+        COD_DOCUM = as.character(stringr::str_trim(input$doc_manual)),
+        TIP_DOCUM = NA_character_,
+        stringsAsFactors = FALSE
+      )
     } else {
       req(input$archivo_consulta)
       consulta <- readxl::read_excel(input$archivo_consulta$datapath)
-      names(consulta) <- names(consulta) |> str_trim() |> toupper()
+      names(consulta) <- names(consulta) |> stringr::str_trim() |> toupper()
+      
+      # Mapear COD_ID -> COD_DOCUM si fuese necesario
       if (!("COD_DOCUM" %in% names(consulta)) && "COD_ID" %in% names(consulta)) {
         consulta <- consulta |> dplyr::rename(COD_DOCUM = COD_ID)
       }
@@ -249,49 +257,55 @@ server <- function(input, output, session) {
                          type = "error")
         return(NULL)
       }
+      
+      # Nos quedamos con COD_DOCUM y TIP_DOCUM si viene
       cols_consulta <- intersect(c("COD_DOCUM", "TIP_DOCUM"), names(consulta))
       codigos_df <- consulta[, cols_consulta, drop = FALSE]
     }
     
+    # Normalizar y quitar duplicados de consulta
     codigos_df <- codigos_df |>
       dplyr::mutate(COD_DOCUM = as.character(COD_DOCUM) |> stringr::str_trim()) |>
       dplyr::distinct()
     
-    # Cruce
-    cruce <- base |>
-      dplyr::filter(COD_DOCUM %in% codigos_df$COD_DOCUM) |>
+    # 2) Left join desde la consulta hacia la base (para incluir SIN COINCIDENCIA)
+    base_limpia <- base |>
+      dplyr::mutate(COD_DOCUM = as.character(COD_DOCUM) |> stringr::str_trim())
+    
+    cruce_full <- codigos_df |>
+      dplyr::left_join(base_limpia, by = "COD_DOCUM")
+    
+    # 3) Completar campos para los que no tuvieron match
+    sin_match <- is.na(cruce_full$FUENTE_HOJA)
+    cruce_full <- cruce_full |>
+      dplyr::mutate(
+        FUENTE_HOJA = dplyr::if_else(sin_match, "SIN COINCIDENCIA", FUENTE_HOJA),
+        TIPO_ENTIDAD = dplyr::if_else(sin_match, NA_character_, TIPO_ENTIDAD),
+        NOMBRES = dplyr::if_else(sin_match, NA_character_, NOMBRES),
+        LISTAS = dplyr::if_else(sin_match, NA_character_, LISTAS),
+        NOMBRE_O_RAZON_SOCIAL = dplyr::if_else(sin_match, NA_character_, NOMBRE_O_RAZON_SOCIAL),
+        FECHA_BUSQUEDA = fecha_busqueda,
+        ESTADO = dplyr::if_else(sin_match, "NO ENCONTRADO", "ENCONTRADO")
+      )
+    
+    # 4) Seleccionar solo columnas visibles (sin romper si faltan)
+    cols <- cols_presentes(cruce_full, columnas_mostrar)
+    cruce_final <- cruce_full |>
+      dplyr::select(dplyr::all_of(cols)) |>
       dplyr::distinct()
     
-    if (nrow(cruce) == 0) {
-      # SIN COINCIDENCIA
-      if (!("TIP_DOCUM" %in% names(codigos_df))) codigos_df$TIP_DOCUM <- NA_character_
-      
-      cruce <- codigos_df |>
-        dplyr::mutate(
-          FUENTE_HOJA = "SIN COINCIDENCIA",
-          TIPO_ENTIDAD = NA_character_,
-          NOMBRES = NA_character_,
-          LISTAS = NA_character_,
-          NOMBRE_O_RAZON_SOCIAL = NA_character_,
-          FECHA_BUSQUEDA = fecha_busqueda
-        )
-      
-      # Calcular columnas fuera del select (evita 'objeto . no encontrado')
-      cols <- cols_presentes(cruce, columnas_mostrar)
-      cruce <- cruce |> dplyr::select(dplyr::all_of(cols))
-      
-    } else {
-      # CON COINCIDENCIA
-      cruce <- cruce |> dplyr::mutate(FECHA_BUSQUEDA = fecha_busqueda)
-      cols <- cols_presentes(cruce, columnas_mostrar)
-      cruce <- cruce |> dplyr::select(dplyr::all_of(cols))
-    }
+    # (Opcional) Orden: primero encontrados, luego no encontrados
+    cruce_final <- cruce_final |>
+      dplyr::mutate(.coincide = ESTADO == "ENCONTRADO") |>
+      dplyr::arrange(dplyr::desc(.coincide), COD_DOCUM) |>
+      dplyr::select(-.coincide)
     
-    resultado_cruce(cruce)
+    # 5) Guardar y mostrar
+    resultado_cruce(cruce_final)
     
     output$tabla_resultado <- renderDT({
       datatable(
-        cruce,
+        cruce_final,
         options = list(pageLength = 10, scrollX = TRUE),
         rownames = FALSE
       )
@@ -311,7 +325,7 @@ server <- function(input, output, session) {
     }
   )
   
-  # PDF robusto (sin LaTeX)
+  # PDF horizontal (landscape) robusto (sin LaTeX)
   output$descargar_pdf <- downloadHandler(
     filename = function() paste0(
       "resultado_cruce_", fecha_local("%Y%m%d_%H%M%S"), ".pdf"
@@ -322,7 +336,7 @@ server <- function(input, output, session) {
       cols <- cols_presentes(df, columnas_mostrar)
       df <- dplyr::select(df, dplyr::all_of(cols))
       
-      # Método A: pagedown + Chrome (si está disponible)
+      # Método A: pagedown + Chrome (horizontal vía CSS @page)
       if (has_pkg("pagedown") && !is.null(pagedown::find_chrome())) {
         html_path <- tempfile(fileext = ".html")
         html_header <- '
@@ -332,11 +346,12 @@ server <- function(input, output, session) {
 <meta charset="utf-8">
 <title>Resultado de búsqueda</title>
 <style>
+@page { size: letter landscape; margin: 24mm; }  /* <-- Carta horizontal */
 body { font-family: Arial, sans-serif; margin: 24px; }
-h1 { margin-bottom: 4px; }
-p  { margin: 0 0 10px 0; }
-table { border-collapse: collapse; width: 100%; font-size: 12px; }
-th, td { border: 1px solid #777; padding: 6px; text-align: left; vertical-align: top; }
+h1 { margin-bottom: 4px; font-size: 18px; }
+p  { margin: 0 0 8px 0; font-size: 11px; }
+table { border-collapse: collapse; width: 100%; font-size: 10px; table-layout: fixed; }
+th, td { border: 1px solid #777; padding: 5px; text-align: left; vertical-align: top; word-break: break-word; hyphens: auto; }
 thead { background: #f0f0f0; }
 </style>
 </head>
@@ -346,7 +361,6 @@ thead { background: #f0f0f0; }
 </body>
 </html>
 '
-        # Tabla HTML con knitr::kable (no requiere attach)
         tbl_html <- knitr::kable(df, format = "html", table.attr = 'class="table"')
         
         html_content <- paste0(
@@ -363,9 +377,9 @@ thead { background: #f0f0f0; }
         return(invisible(NULL))
       }
       
-      # Método B: gridExtra::tableGrob (si está disponible)
+      # Método B: gridExtra::tableGrob (horizontal por dimensiones del dispositivo)
       if (has_pkg("gridExtra")) {
-        pdf(file, paper = "letter")
+        pdf(file, width = 11, height = 8.5)  # <-- Carta horizontal
         grid::grid.newpage()
         grid::grid.text("Resultado de búsqueda en listas", x = 0.5, y = 0.95,
                         gp = grid::gpar(fontsize = 14, fontface = "bold"))
@@ -373,20 +387,23 @@ thead { background: #f0f0f0; }
                         x = 0.5, y = 0.92, gp = grid::gpar(fontsize = 10))
         grid::grid.text(sprintf("Registros: %d", nrow(df)),
                         x = 0.5, y = 0.89, gp = grid::gpar(fontsize = 10))
-        tg <- gridExtra::tableGrob(df, rows = NULL, theme = gridExtra::ttheme_minimal(base_size = 10))
+        tg <- gridExtra::tableGrob(
+          df, rows = NULL, theme = gridExtra::ttheme_minimal(base_size = 9)
+        )
+        tg$widths <- rep(grid::unit(1, "null"), ncol(df))
         grid::grid.draw(tg)
         dev.off()
         return(invisible(NULL))
       }
       
-      # Método C: PDF básico con base R (sin paquetes extra)
-      pdf(file, paper = "letter")
+      # Método C: PDF básico con base R (horizontal por width/height)
+      pdf(file, width = 11, height = 8.5)  # <-- Carta horizontal
       op <- par(mar = c(1,1,1,1))
       plot.new()
       mtext("Resultado de búsqueda en listas", side = 3, line = -2, cex = 1.2, font = 2)
       mtext(sprintf("Generado: %s", fecha_local()), side = 3, line = -1, cex = 0.9)
       mtext(sprintf("Registros: %d", nrow(df)), side = 3, line = 0, cex = 0.9)
-      N <- min(nrow(df), 40); y <- 0.8; step <- 0.02
+      N <- min(nrow(df), 60); y <- 0.8; step <- 0.015
       headers <- paste(names(df), collapse = " | ")
       text(x = 0.02, y = y, labels = headers, adj = c(0,1), cex = 0.7); y <- y - step
       for (i in seq_len(N)) {
@@ -400,3 +417,5 @@ thead { background: #f0f0f0; }
 }
 
 shinyApp(ui = ui, server = server)
+
+
