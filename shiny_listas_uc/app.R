@@ -1,3 +1,6 @@
+
+
+
 library(shiny)
 library(readxl)
 library(dplyr)
@@ -31,9 +34,36 @@ message("as.POSIXlt(Sys.time())$zone: ",
 
 ui <- fluidPage(
   titlePanel("Cruce de Documentos con listas UC (Excel fijo)"),
+  
+  # ---------- CSS para truncar ruta con ellipsis y mostrar tooltip ----------
+  tags$style(HTML("
+    /* Estiliza textos del sidebar */
+    .sidebarPanel small {
+      display: block;
+      line-height: 1.2;
+      margin-bottom: 6px;
+    }
+    /* Clase para truncar en una sola línea con puntos suspensivos */
+    .path-trunc {
+      max-width: 100%;
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    /* Estilo monoespaciado y buen contraste para rutas */
+    code {
+      font-family: Consolas, 'Courier New', monospace;
+    }
+    /* (Opcional) Evitar que el sidebar se haga demasiado angosto */
+    @media (min-width: 768px) {
+      .col-sm-4 { min-width: 320px; }
+    }
+  ")),
+  
   sidebarLayout(
     sidebarPanel(
-      fileInput("archivo_consulta", "Sube tu Excel con COD_DOCUM",
+      fileInput("archivo_consulta", "Sube tu Excel y que el nombre de la columna sea COD_DOCUM",
                 accept = c(".xlsx", ".xls")),
       textInput("doc_manual", "O ingresa un documento manualmente"),
       actionButton("procesar", "Procesar"),
@@ -56,13 +86,14 @@ ui <- fluidPage(
 server <- function(input, output, session) {
   
   # === Columnas visibles/exportables ===
+  # TIP_DOCUM primero, luego COD_DOCUM. LISTAS removida del resultado.
   columnas_mostrar <- c(
-    "COD_DOCUM",
-    "TIP_DOCUM",
+    "TIP_DOCUM",             # primero
+    "COD_DOCUM",             # luego
     "FUENTE_HOJA",
     "TIPO_ENTIDAD",
     "NOMBRES",
-    "LISTAS",
+    # "LISTAS",              # <- oculta del resultado final
     "NOMBRE_O_RAZON_SOCIAL",
     "FECHA_BUSQUEDA",
     "ESTADO" # opcional; se ve si hubo match o no
@@ -206,17 +237,24 @@ server <- function(input, output, session) {
       tags$span(style = "color:#3c763d;", "Excel base: cargado correctamente")
     }
   })
+  
+  # ---------- Opción A: ruta truncada con ellipsis y tooltip ----------
   output$detalle_base <- renderUI({
     inf <- info_carga()
     if (!is.null(inf$path) && !is.na(inf$path) && !is.null(base_listas())) {
       base <- base_listas()
       tags$small(
-        paste0("Ruta: ", inf$path,
-               " | Filas: ", nrow(base),
-               " | Columnas: ", ncol(base))
+        # Línea de la ruta (truncada, con tooltip). Se usa <code> para monoespaciado.
+        tags$span(
+          class = "path-trunc",
+          tags$code(title = inf$path, inf$path)
+        ),
+        # Línea de métricas
+        sprintf("Filas: %d | Columnas: %d", nrow(base), ncol(base))
       )
     }
   })
+  
   output$hojas_base <- renderUI({
     inf <- info_carga()
     if (length(inf$hojas) > 0) {
@@ -272,6 +310,16 @@ server <- function(input, output, session) {
     cruce_full <- codigos_df |>
       dplyr::left_join(base_limpia, by = "COD_DOCUM")
     
+    # --- Unificar TIP_DOCUM (evita TIP_DOCUM.x / TIP_DOCUM.y) ---
+    if ("TIP_DOCUM.x" %in% names(cruce_full) || "TIP_DOCUM.y" %in% names(cruce_full)) {
+      cruce_full <- cruce_full |>
+        dplyr::mutate(
+          TIP_DOCUM = dplyr::coalesce(.data[["TIP_DOCUM.x"]], .data[["TIP_DOCUM.y"]])
+        ) |>
+        dplyr::select(-dplyr::any_of(c("TIP_DOCUM.x", "TIP_DOCUM.y")))
+    }
+    # --- Fin unificación ---
+    
     # 3) Completar campos para los que no tuvieron match
     sin_match <- is.na(cruce_full$FUENTE_HOJA)
     cruce_full <- cruce_full |>
@@ -279,7 +327,7 @@ server <- function(input, output, session) {
         FUENTE_HOJA = dplyr::if_else(sin_match, "SIN COINCIDENCIA", FUENTE_HOJA),
         TIPO_ENTIDAD = dplyr::if_else(sin_match, NA_character_, TIPO_ENTIDAD),
         NOMBRES = dplyr::if_else(sin_match, NA_character_, NOMBRES),
-        LISTAS = dplyr::if_else(sin_match, NA_character_, LISTAS),
+        LISTAS = dplyr::if_else(sin_match, NA_character_, LISTAS),  # se mantiene internamente
         NOMBRE_O_RAZON_SOCIAL = dplyr::if_else(sin_match, NA_character_, NOMBRE_O_RAZON_SOCIAL),
         FECHA_BUSQUEDA = fecha_busqueda,
         ESTADO = dplyr::if_else(sin_match, "NO ENCONTRADO", "ENCONTRADO")
@@ -291,10 +339,10 @@ server <- function(input, output, session) {
       dplyr::select(dplyr::all_of(cols)) |>
       dplyr::distinct()
     
-    # (Opcional) Orden: primero encontrados, luego no encontrados
+    # (Opcional) Orden: primero encontrados, luego por TIP_DOCUM y COD_DOCUM
     cruce_final <- cruce_final |>
       dplyr::mutate(.coincide = ESTADO == "ENCONTRADO") |>
-      dplyr::arrange(dplyr::desc(.coincide), COD_DOCUM) |>
+      dplyr::arrange(dplyr::desc(.coincide), TIP_DOCUM, COD_DOCUM) |>
       dplyr::select(-.coincide)
     
     # 5) Guardar y mostrar
@@ -414,5 +462,3 @@ thead { background: #f0f0f0; }
 }
 
 shinyApp(ui = ui, server = server)
-
-
