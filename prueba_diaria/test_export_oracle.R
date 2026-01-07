@@ -7,8 +7,8 @@ suppressPackageStartupMessages({
 
 DSN         <- "TRON_BI"
 ORACLE_USER <- Sys.getenv("ORACLE_USER", "jpuntri")
-ORACLE_PASS <- Sys.getenv("ORACLE_PASS", "Peru.500600")  # ideal mover a variable de entorno
-OUTPUT_DIR  <- "D:/Descargas/Pedidos Hugo/Shiny_busqueda_listas_UC/SHINY_BUSQUEDA_EN_LISTAS_UC/ver_log"
+ORACLE_PASS <- Sys.getenv("ORACLE_PASS", "Peru.50070")  # ideal mover a variable de entorno
+OUTPUT_DIR  <- "D:/Descargas/Pedidos Hugo/Shiny_busqueda_listas_UC/SHINY_BUSQUEDA_EN_LISTAS_UC/shiny_listas_uc"
 FILE_PREFIX <- "reporte"
 SHEET_NAME  <- "Datos"
 ADD_TIME    <- TRUE
@@ -18,13 +18,13 @@ SELECT
     t73.TIPO_ENTIDAD,t73.TIP_DOCUM,t73.COD_DOCUM,
     (t73.APELLIDO_PATERNO || ' ' || t73.APELLIDO_MATERNO || ' ' ||
             t73.NOMBRE1 || ' ' || t73.NOMBRE2 || ' ' || t73.NOMBRE3) AS NOMBRE,'PEP' AS LISTAS FROM targen73 t73
- --WHERE ROWNUM < 2  -- solo para pruebas
+ WHERE MCA_INH <> 'S'--ROWNUM < 2  -- solo para pruebas
 UNION ALL
 SELECT
     /* targen66 no tiene TIPO_ENTIDAD */
     CAST(NULL AS VARCHAR2(150)) AS TIPO_ENTIDAD,t66.TIP_DOCUM,t66.COD_DOCUM,
     (t66.NOMBRE_O_RAZON_SOCIAL) AS NOMBRE,'OBSERVADOS' AS LISTAS FROM targen66 t66
- --WHERE ROWNUM < 2  -- solo para pruebas
+ WHERE MCA_INH <> 'S'-- ROWNUM < 2  -- solo para pruebas
 "
 
 if (!dir.exists(OUTPUT_DIR)) dir.create(OUTPUT_DIR, recursive = TRUE, showWarnings = FALSE)

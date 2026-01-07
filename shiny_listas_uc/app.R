@@ -1,4 +1,6 @@
 
+
+
 library(shiny)
 library(readxl)
 library(dplyr)
@@ -7,8 +9,8 @@ library(writexl)
 library(stringr)
 library(purrr)
 library(tidyr)
+library(gridExtra)   # <- asegúrate que se instale en shinyapps.io
 
-# Para PDF sin LaTeX (opcional)
 has_pkg <- function(pkg) requireNamespace(pkg, quietly = TRUE)
 
 # =============================
@@ -22,24 +24,14 @@ fecha_local <- function(fmt = "%Y-%m-%d %H:%M:%S") {
   format(Sys.time(), tz = TZ_APP, fmt)
 }
 
-# Logs
-message("== Zona horaria de la app ==")
-message("TZ env: '", Sys.getenv("TZ"), "'")
-message("Sys.timezone(): ", Sys.timezone())
-message("as.POSIXlt(Sys.time())$zone: ",
-        paste(unique(as.POSIXlt(Sys.time())$zone), collapse = ", "))
-
 ui <- fluidPage(
   titlePanel("Cruce de Documentos con listas UC (Excel base automático: más reciente)"),
-  
-  # ---------- CSS ----------
   tags$style(HTML("
     .sidebarPanel small { display: block; line-height: 1.2; margin-bottom: 6px; }
     .path-trunc { max-width: 100%; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     code { font-family: Consolas, 'Courier New', monospace; }
     @media (min-width: 768px) { .col-sm-4 { min-width: 320px; } }
   ")),
-  
   sidebarLayout(
     sidebarPanel(
       fileInput("archivo_consulta", "Sube tu Excel de consulta (columna COD_DOCUM o COD_ID)",
@@ -64,18 +56,16 @@ ui <- fluidPage(
 
 server <- function(input, output, session) {
   
-  # === Columnas visibles/exportables ===
+  # === Columnas visibles/exportables (sin FUENTE_HOJA; NOMBRE 3ra) ===
   columnas_mostrar <- c(
     "TIP_DOCUM",
     "COD_DOCUM",
-    "FUENTE_HOJA",
+    "NOMBRE",          # 3ra columna (más ancha)
     "LISTAS",
     "TIPO_ENTIDAD",
-    "NOMBRE",
     "FECHA_BUSQUEDA",
     "ESTADO"
   )
-  
   cols_presentes <- function(df, deseadas) intersect(deseadas, names(df))
   
   base_listas      <- reactiveVal(NULL)
@@ -85,7 +75,6 @@ server <- function(input, output, session) {
   # ---------- Normalización de encabezados ----------
   normalizar_y_mapear <- function(df) {
     names(df) <- names(df) |> stringr::str_trim() |> toupper()
-    # Mapeos de compatibilidad (por si algún archivo trae variantes)
     mapa <- c(
       "COD_ID"        = "COD_DOCUM",
       "COD_DOC"       = "COD_DOCUM",
@@ -104,24 +93,19 @@ server <- function(input, output, session) {
     df
   }
   
-  # Superset por compatibilidad
   columnas_superset <- c(
     "TIP_DOCUM", "COD_DOCUM", "TARGEN", "NOMBRE", "MCA_INH", "FEC_ACTU", "DETALLE",
-    "TIPO_ENTIDAD", "NOMBRES", "LISTAS", "NOMBRE_O_RAZON_SOCIAL"
+    "TIPO_ENTIDAD", "NOMBRES", "LISTAS", "NOMBRE_O_RAZON_SOCIAL", "FUENTE_HOJA"
   )
   
   estandarizar_columnas <- function(df, hoja) {
     df <- normalizar_y_mapear(df)
-    
     if (!("COD_DOCUM" %in% names(df))) {
       stop(paste0("La hoja '", hoja, "' no contiene la columna COD_DOCUM (ni mapeable)."))
     }
-    
-    # Crear faltantes del superset
     faltantes <- setdiff(columnas_superset, names(df))
     if (length(faltantes) > 0) for (col in faltantes) df[[col]] <- NA
     
-    # Normalizar LISTAS (solo por robustez)
     if ("LISTAS" %in% names(df)) {
       df$LISTAS <- df$LISTAS |> as.character() |> stringr::str_trim() |> toupper()
       df$LISTAS <- dplyr::case_when(
@@ -131,7 +115,6 @@ server <- function(input, output, session) {
       )
     }
     
-    # Orden y tipos (vectorizado y seguro)
     df <- df[, unique(c(columnas_superset, names(df))), drop = FALSE]
     df <- df |>
       dplyr::mutate(
@@ -142,8 +125,6 @@ server <- function(input, output, session) {
   }
   
   # ---------- Cargar Excel base: SOLO UNA HOJA ----------
-  # Prioriza hoja 'datos' (case-insensitive); si no está, lee la PRIMERA hoja.
-  # Lee TODAS las columnas como texto para preservar ceros a la izquierda.
   cargar_excel_base <- function(path) {
     if (!file.exists(path)) stop(paste0("No se encontró el archivo base en: ", path))
     
@@ -153,17 +134,14 @@ server <- function(input, output, session) {
     hoja_sel <- if (length(idx_datos) == 1) hojas[idx_datos] else hojas[1]
     message("Leyendo hoja: ", hoja_sel, " del archivo base: ", basename(path))
     
-    # Leer una vez para conocer el número de columnas
     tmp <- readxl::read_excel(path, sheet = hoja_sel, col_names = TRUE)
     n <- ncol(tmp)
-    # Leer nuevamente forzando todo como texto
     df <- readxl::read_excel(path, sheet = hoja_sel, col_names = TRUE,
                              col_types = rep("text", n))
     
     df <- estandarizar_columnas(df, hoja_sel)
     df$FUENTE_HOJA <- hoja_sel
     
-    # Filtrar si venía MCA_INH
     if ("MCA_INH" %in% names(df)) {
       df <- df |> dplyr::filter(is.na(MCA_INH) | MCA_INH != "S")
     }
@@ -175,8 +153,6 @@ server <- function(input, output, session) {
   # =============================
   # Opción A: seleccionar el Excel más reciente por fecha de modificación
   # =============================
-  
-  # Patrón de nombres (ajústalo si usas otro prefijo)
   PATRON_ARCHIVO <- "^reporte_.*\\.xlsx$"
   
   CARPETAS_BUSQUEDA <- function() {
@@ -208,10 +184,8 @@ server <- function(input, output, session) {
   
   # ---------- Resolver automáticamente el Excel BASE MÁS RECIENTE ----------
   observe({
-    # 1) Intentar encontrar el más reciente por patrón 'reporte_*.xlsx'
     path_ok <- resolver_archivo_base_mas_reciente()
     
-    # 2) Si no hay candidatos 'reporte_*.xlsx', usar fallback: carga_prueba.xlsx o peps_diciembre.xlsx
     if (is.na(path_ok)) {
       app_dir <- normalizePath(".", mustWork = TRUE)
       candidatos_fallback <- c(
@@ -221,15 +195,11 @@ server <- function(input, output, session) {
         file.path(app_dir, "peps_diciembre.xlsx")
       )
       existe <- file.exists(candidatos_fallback)
-      message("Fallback candidatos: ", paste(candidatos_fallback, collapse = " | "))
-      message("Fallback existe: ", paste(existe, collapse = ", "))
       if (any(existe)) {
         path_ok <- normalizePath(candidatos_fallback[which(existe)[1]], mustWork = TRUE)
-        message("Usando fallback: ", path_ok)
       }
     }
     
-    # 3) Si aún no tenemos path, avisar y salir
     if (is.na(path_ok)) {
       showNotification(
         "No se encontró un archivo 'reporte_*.xlsx' ni los fallbacks (carga_prueba.xlsx/peps_diciembre.xlsx).",
@@ -240,7 +210,6 @@ server <- function(input, output, session) {
       return(NULL)
     }
     
-    # 4) Cargar el Excel (lee una sola hoja y todo como texto)
     tryCatch({
       res <- cargar_excel_base(path_ok)
       base_listas(res$base)
@@ -250,7 +219,6 @@ server <- function(input, output, session) {
         type = "message"
       )
     }, error = function(e) {
-      message("ERROR al leer el Excel base reciente: ", e$message)
       base_listas(NULL)
       info_carga(list(path = path_ok, hojas = character(0)))
       showNotification(paste("Error leyendo el Excel base:", e$message),
@@ -278,23 +246,17 @@ server <- function(input, output, session) {
     }
   })
   
-  # === NUEVO: Mostrar hoja leída, archivo base (nombre) y última modificación ===
   output$hojas_base <- renderUI({
     inf <- info_carga()
     if (!is.null(inf$path) && !is.na(inf$path) && length(inf$hojas) > 0) {
-      # Obtener fecha de modificación del archivo y formatearla en TZ Lima
       mtime <- tryCatch(file.info(inf$path)$mtime, error = function(e) NA)
       mtime_fmt <- if (!is.na(mtime)) format(mtime, tz = TZ_APP, "%d-%m-%Y %H:%M:%S") else "N/A"
-      
       tags$small(
         tags$span(style = "color:#3c763d;", paste0("Hoja leída: ", paste(inf$hojas, collapse = ", "))),
         tags$br(),
         tags$span(
           class = "path-trunc",
-          tags$code(
-            title = inf$path,                                 # tooltip: ruta completa
-            paste0("Archivo base: ", basename(inf$path))      # visible: nombre del archivo
-          )
+          tags$code(title = inf$path, paste0("Archivo base: ", basename(inf$path)))
         ),
         tags$br(),
         paste0("Última modificación: ", mtime_fmt)
@@ -302,7 +264,7 @@ server <- function(input, output, session) {
     }
   })
   
-  # === Procesar cruce (incluye SIN COINCIDENCIA para búsqueda masiva) ===
+  # === Procesar cruce (incluye SIN COINCIDENCIA) ===
   observeEvent(input$procesar, {
     base <- base_listas()
     req(base)
@@ -343,7 +305,7 @@ server <- function(input, output, session) {
       ) |>
       dplyr::distinct()
     
-    # 2) Left join desde la consulta hacia la base (para incluir SIN COINCIDENCIA)
+    # 2) Left join desde la consulta hacia la base
     base_limpia <- base |>
       dplyr::mutate(
         COD_DOCUM = as.character(COD_DOCUM),
@@ -352,7 +314,7 @@ server <- function(input, output, session) {
     
     cruce_full <- codigos_df |> dplyr::left_join(base_limpia, by = "COD_DOCUM")
     
-    # --- Unificar TIP_DOCUM (evita TIP_DOCUM.x / TIP_DOCUM.y) ---
+    # --- Unificar TIP_DOCUM ---
     if ("TIP_DOCUM.x" %in% names(cruce_full) || "TIP_DOCUM.y" %in% names(cruce_full)) {
       cruce_full <- cruce_full |>
         dplyr::mutate(
@@ -372,15 +334,15 @@ server <- function(input, output, session) {
     sin_match <- is.na(cruce_full$FUENTE_HOJA)
     cruce_full <- cruce_full |>
       dplyr::mutate(
-        FUENTE_HOJA = dplyr::if_else(sin_match, "SIN COINCIDENCIA", FUENTE_HOJA),
-        TIPO_ENTIDAD = dplyr::if_else(sin_match, NA_character_, TIPO_ENTIDAD),
-        LISTAS = dplyr::if_else(sin_match, NA_character_, LISTAS),
-        NOMBRE = dplyr::if_else(sin_match, NA_character_, NOMBRE),
+        FUENTE_HOJA    = dplyr::if_else(sin_match, "SIN COINCIDENCIA", FUENTE_HOJA),
+        TIPO_ENTIDAD   = dplyr::if_else(sin_match, NA_character_, TIPO_ENTIDAD),
+        LISTAS         = dplyr::if_else(sin_match, NA_character_, LISTAS),
+        NOMBRE         = dplyr::if_else(sin_match, NA_character_, NOMBRE),
         FECHA_BUSQUEDA = fecha_busqueda,
-        ESTADO = dplyr::if_else(sin_match, "NO ENCONTRADO", "ENCONTRADO")
+        ESTADO         = dplyr::if_else(sin_match, "NO ENCONTRADO", "ENCONTRADO")
       )
     
-    # 4) Seleccionar solo columnas visibles (sin romper si faltan)
+    # 4) Salida ordenada con NOMBRE 3ra
     cols <- cols_presentes(cruce_full, columnas_mostrar)
     cruce_final <- cruce_full |>
       dplyr::select(dplyr::all_of(cols)) |>
@@ -397,11 +359,11 @@ server <- function(input, output, session) {
         options = list(
           pageLength = 10,
           scrollX = TRUE,
-          dom = 'Brtip',        # sin 'f' para ocultar buscador global; usa 'Bfrtip' si lo quieres
+          dom = 'Brtip',
           buttons = c('copy', 'csv', 'excel')
         ),
         rownames = FALSE,
-        filter = "none"         # quita fila de filtros ("All")
+        filter = "none"
       )
     })
   })
@@ -415,11 +377,13 @@ server <- function(input, output, session) {
       df <- resultado_cruce()
       cols <- cols_presentes(df, columnas_mostrar)
       df <- dplyr::select(df, dplyr::all_of(cols))
-      write_xlsx(df, path = file)
+      writexl::write_xlsx(df, path = file)
     }
   )
   
-  # PDF horizontal (landscape) robusto (sin LaTeX)
+  # ============================
+  # PDF (solo R puro: gridExtra o Base R)
+  # ============================
   output$descargar_pdf <- downloadHandler(
     filename = function() paste0(
       "resultado_cruce_", fecha_local("%Y%m%d_%H%M%S"), ".pdf"
@@ -430,82 +394,89 @@ server <- function(input, output, session) {
       cols <- cols_presentes(df, columnas_mostrar)
       df <- dplyr::select(df, dplyr::all_of(cols))
       
-      # Método A: pagedown + Chrome
-      if (has_pkg("pagedown") && !is.null(pagedown::find_chrome())) {
-        html_path <- tempfile(fileext = ".html")
-        html_header <- '
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>Resultado de búsqueda</title>
-<style>
-@page { size: letter landscape; margin: 24mm; }
-body { font-family: Arial, sans-serif; margin: 24px; }
-h1 { margin-bottom: 4px; font-size: 18px; }
-p  { margin: 0 0 8px 0; font-size: 11px; }
-table { border-collapse: collapse; width: 100%; font-size: 10px; table-layout: fixed; }
-th, td { border: 1px solid #777; padding: 5px; text-align: left; vertical-align: top; word-break: break-word; hyphens: auto; }
-thead { background: #f0f0f0; }
-</style>
-</head>
-<body>
-'
-        html_footer <- '
-</body>
-</html>
-'
-        tbl_html <- knitr::kable(df, format = "html", table.attr = 'class="table"')
+      # ---- Sanitización segura ----
+      clean_text <- function(x) {
+        x <- as.character(x)
+        x <- iconv(x, from = "", to = "UTF-8", sub = " ")
+        x <- gsub("[[:cntrl:]]", " ", x, perl = TRUE)
+        x <- gsub("\r\n|\r", "\n", x, perl = TRUE)
+        trimws(x)
+      }
+      chr_cols <- vapply(df, is.character, logical(1))
+      if (any(chr_cols)) df[chr_cols] <- lapply(df[chr_cols], clean_text)
+      
+      # ---- SIEMPRE escribir un PDF (tryCatch) ----
+      tryCatch({
+        pdf(file, width = 11, height = 8.5)  # Carta apaisado
+        on.exit(dev.off(), add = TRUE)
         
-        html_content <- paste0(
-          html_header,
-          sprintf("<h1>Resultado de búsqueda en listas</h1>"),
-          sprintf("<p><strong>Generado:</strong> %s</p>", fecha_local()),
-          sprintf("<p><strong>Registros:</strong> %d</p>", nrow(df)),
-          as.character(tbl_html),
-          html_footer
-        )
-        writeLines(html_content, con = html_path)
-        pagedown::chrome_print(input = html_path, output = file)
-        return(invisible(NULL))
-      }
-      
-      # Método B: gridExtra::tableGrob
-      if (has_pkg("gridExtra")) {
+        chunk_size <- 24  # menos filas por página para evitar cortes
+        n_pages <- max(1L, ceiling(max(1L, nrow(df)) / chunk_size))
+        
+        for (i in seq_len(n_pages)) {
+          idx_ini <- ((i - 1) * chunk_size) + 1
+          idx_fin <- min(i * chunk_size, nrow(df))
+          df_i <- if (nrow(df) == 0) df[0, , drop = FALSE] else df[idx_ini:idx_fin, , drop = FALSE]
+          
+          title_g <- grid::textGrob("Resultado de búsqueda en listas UC",
+                                    gp = grid::gpar(fontsize = 16, fontface = "bold"),
+                                    x = 0.5, y = 0.5, just = "center")
+          subtitle_g <- grid::textGrob(
+            sprintf("Generado: %s    |    Registros totales: %d    |    Página %d de %d",
+                    fecha_local(), nrow(df), i, n_pages),
+            gp = grid::gpar(fontsize = 11),
+            x = 0.5, y = 0.5, just = "center"
+          )
+          spacer_top <- grid::nullGrob()
+          spacer_bottom <- grid::nullGrob()
+          
+          if (nrow(df_i) == 0) {
+            msg_g <- grid::textGrob("No hay registros para mostrar.",
+                                    gp = grid::gpar(fontsize = 11),
+                                    x = 0.5, y = 0.5, just = "center")
+            page_g <- gridExtra::arrangeGrob(
+              title_g, subtitle_g, spacer_top, msg_g, spacer_bottom, ncol = 1,
+              heights = grid::unit(c(0.18, 0.12, 0.06, 0.60, 0.04), "npc")
+            )
+            grid::grid.newpage(); grid::grid.draw(page_g)
+          } else {
+            tg <- gridExtra::tableGrob(
+              df_i, rows = NULL,
+              theme = gridExtra::ttheme_minimal(
+                base_size = 9,
+                core = list(fg_params = list(hjust = 0.5, x = grid::unit(0.5, "npc"))),
+                colhead = list(fg_params = list(hjust = 0.5, x = grid::unit(0.5, "npc")))
+              )
+            )
+            # Ensanchar columna 3 (NOMBRE) y alinear a la izquierda
+            tg$widths <- rep(grid::unit(1, "null"), ncol(df_i))
+            if (ncol(df_i) >= 3) tg$widths[3] <- grid::unit(3, "null")
+            lay <- tg$layout
+            idx_head_col3 <- which(lay$name == "colhead" & lay$l == 3)
+            for (j in idx_head_col3) { tg$grobs[[j]]$x <- grid::unit(0, "npc"); tg$grobs[[j]]$hjust <- 0 }
+            idx_core_col3 <- which(lay$name == "core" & lay$l == 3)
+            for (j in idx_core_col3) { tg$grobs[[j]]$x <- grid::unit(0, "npc"); tg$grobs[[j]]$hjust <- 0 }
+            
+            page_g <- gridExtra::arrangeGrob(
+              title_g, subtitle_g, spacer_top, tg, spacer_bottom,
+              ncol = 1,
+              heights = grid::unit(c(0.18, 0.12, 0.06, 0.60, 0.04), "npc")
+            )
+            grid::grid.newpage(); grid::grid.draw(page_g)
+          }
+        }
+      }, error = function(e) {
+        # Fallback: PDF de 1 página con el mensaje de error (nunca 500)
         pdf(file, width = 11, height = 8.5)
-        grid::grid.newpage()
-        grid::grid.text("Resultado de búsqueda en listas", x = 0.5, y = 0.95,
-                        gp = grid::gpar(fontsize = 14, fontface = "bold"))
-        grid::grid.text(sprintf("Generado: %s", fecha_local()),
-                        x = 0.5, y = 0.92, gp = grid::gpar(fontsize = 10))
-        grid::grid.text(sprintf("Registros: %d", nrow(df)),
-                        x = 0.5, y = 0.89, gp = grid::gpar(fontsize = 10))
-        tg <- gridExtra::tableGrob(df, rows = NULL, theme = gridExtra::ttheme_minimal(base_size = 9))
-        tg$widths <- rep(grid::unit(1, "null"), ncol(df))
-        grid::grid.draw(tg)
-        dev.off()
-        return(invisible(NULL))
-      }
-      
-      # Método C: base R
-      pdf(file, width = 11, height = 8.5)
-      op <- par(mar = c(1,1,1,1))
-      plot.new()
-      mtext("Resultado de búsqueda en listas", side = 3, line = -2, cex = 1.2, font = 2)
-      mtext(sprintf("Generado: %s", fecha_local()), side = 3, line = -1, cex = 0.9)
-      mtext(sprintf("Registros: %d", nrow(df)), side = 3, line = 0, cex = 0.9)
-      N <- min(nrow(df), 60); y <- 0.8; step <- 0.015
-      headers <- paste(names(df), collapse = " | ")
-      text(x = 0.02, y = y, labels = headers, adj = c(0,1), cex = 0.7); y <- y - step
-      for (i in seq_len(N)) {
-        row_str <- paste(df[i, ], collapse = " | ")
-        text(x = 0.02, y = y, labels = row_str, adj = c(0,1), cex = 0.7)
-        y <- y - step; if (y < 0.05) break
-      }
-      par(op); dev.off()
+        on.exit(dev.off(), add = TRUE)
+        par(mar = c(1,1,1,1)); plot.new()
+        mtext("Error generando PDF", side = 3, line = -1.5, cex = 1.3, font = 2)
+        text(0.02, 0.92, labels = fecha_local(), adj = c(0,1), cex = 0.9)
+        text(0.02, 0.86, labels = paste("Mensaje del servidor:", e$message), adj = c(0,1), cex = 0.85)
+        text(0.02, 0.80, labels = "Intenta nuevamente o contacta al administrador.", adj = c(0,1), cex = 0.85)
+      })
     }
   )
 }
 
 shinyApp(ui = ui, server = server)
-

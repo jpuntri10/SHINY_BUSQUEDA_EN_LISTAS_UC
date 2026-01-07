@@ -5,8 +5,9 @@ account: joseph-puntriano-cumplimiento-mapfre
 server: shinyapps.io
 hostUrl: https://api.shinyapps.io/v1
 appId: 16350076
-bundleId: 11383033
+bundleId: 11413394
 url: https://joseph-puntriano-cumplimiento-mapfre.shinyapps.io/shiny_listas_uc/
 version: 1
 asMultiple: FALSE
 asStatic: FALSE
+ignoredFiles: reporte_2026-01-07_1340.xlsx
